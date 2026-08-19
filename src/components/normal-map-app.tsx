@@ -1,17 +1,16 @@
 "use client";
 
-import { ChangeEvent, DragEvent, useCallback, useEffect, useRef, useState } from "react";
+import { ChangeEvent, DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createPreviewSource,
+  estimateMaxTilt,
+  NormalMapPipeline,
+  type SourceImage,
+} from "@/lib/normal-map-pipeline";
 
 type GradientMode = "sobel" | "central";
 type YConvention = "opengl" | "directx";
 type ExportFormat = "png" | "tga" | "tiff" | "webp" | "jpeg";
-
-type SourceImage = {
-  name: string;
-  width: number;
-  height: number;
-  imageData: ImageData;
-};
 
 const exportTypes: Record<ExportFormat, { label: string; extension: string; mime: string }> = {
   png: { label: "PNG", extension: "png", mime: "image/png" },
@@ -20,160 +19,6 @@ const exportTypes: Record<ExportFormat, { label: string; extension: string; mime
   webp: { label: "WebP", extension: "webp", mime: "image/webp" },
   jpeg: { label: "JPEG", extension: "jpg", mime: "image/jpeg" },
 };
-
-const vertexShader = `#version 300 es
-precision highp float;
-const vec2 positions[3] = vec2[3](
-  vec2(-1.0, -1.0),
-  vec2(3.0, -1.0),
-  vec2(-1.0, 3.0)
-);
-out vec2 vUv;
-void main() {
-  vec2 p = positions[gl_VertexID];
-  vUv = p * 0.5 + 0.5;
-  gl_Position = vec4(p, 0.0, 1.0);
-}`;
-
-const lumaShader = `#version 300 es
-precision highp float;
-uniform sampler2D uImage;
-uniform bool uInvert;
-in vec2 vUv;
-out vec4 outColor;
-void main() {
-  vec3 c = texture(uImage, vUv).rgb;
-  float h = dot(c, vec3(0.299, 0.587, 0.114));
-  if (uInvert) h = 1.0 - h;
-  outColor = vec4(h, h, h, 1.0);
-}`;
-
-const blurShader = `#version 300 es
-precision highp float;
-uniform sampler2D uImage;
-uniform vec2 uTexel;
-uniform vec2 uDirection;
-uniform int uRadius;
-in vec2 vUv;
-out vec4 outColor;
-void main() {
-  if (uRadius == 0) {
-    outColor = texture(uImage, vUv);
-    return;
-  }
-  float sigma = max(float(uRadius) / 3.0, 0.001);
-  float total = 0.0;
-  float h = 0.0;
-  for (int i = -24; i <= 24; i++) {
-    if (abs(i) <= uRadius) {
-      float x = float(i);
-      float w = exp(-(x * x) / (2.0 * sigma * sigma));
-      vec2 uv = clamp(vUv + uDirection * uTexel * x, vec2(0.0), vec2(1.0));
-      h += texture(uImage, uv).r * w;
-      total += w;
-    }
-  }
-  float blurred = h / max(total, 0.00001);
-  outColor = vec4(blurred, blurred, blurred, 1.0);
-}`;
-
-const normalShader = `#version 300 es
-precision highp float;
-uniform sampler2D uImage;
-uniform vec2 uTexel;
-uniform float uStrength;
-uniform bool uFlipY;
-uniform int uGradientMode;
-in vec2 vUv;
-out vec4 outColor;
-float h(vec2 offset) {
-  return texture(uImage, clamp(vUv + offset * uTexel, vec2(0.0), vec2(1.0))).r;
-}
-void main() {
-  float gx;
-  float gy;
-  if (uGradientMode == 0) {
-    float tl = h(vec2(-1.0, -1.0));
-    float t = h(vec2(0.0, -1.0));
-    float tr = h(vec2(1.0, -1.0));
-    float l = h(vec2(-1.0, 0.0));
-    float r = h(vec2(1.0, 0.0));
-    float bl = h(vec2(-1.0, 1.0));
-    float b = h(vec2(0.0, 1.0));
-    float br = h(vec2(1.0, 1.0));
-    gx = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
-    gy = (bl + 2.0 * b + br) - (tl + 2.0 * t + tr);
-  } else {
-    gx = h(vec2(1.0, 0.0)) - h(vec2(-1.0, 0.0));
-    gy = h(vec2(0.0, 1.0)) - h(vec2(0.0, -1.0));
-  }
-  float ySign = uFlipY ? -1.0 : 1.0;
-  vec3 n = normalize(vec3(-gx * uStrength, gy * uStrength * ySign, 1.0));
-  outColor = vec4(n * 0.5 + 0.5, 1.0);
-}`;
-
-function createShader(gl: WebGL2RenderingContext, type: number, source: string) {
-  const shader = gl.createShader(type);
-  if (!shader) throw new Error("Unable to create shader.");
-  gl.shaderSource(shader, source);
-  gl.compileShader(shader);
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    throw new Error(gl.getShaderInfoLog(shader) ?? "Shader compile failed.");
-  }
-  return shader;
-}
-
-function createProgram(gl: WebGL2RenderingContext, fragment: string) {
-  const program = gl.createProgram();
-  if (!program) throw new Error("Unable to create program.");
-  gl.attachShader(program, createShader(gl, gl.VERTEX_SHADER, vertexShader));
-  gl.attachShader(program, createShader(gl, gl.FRAGMENT_SHADER, fragment));
-  gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    throw new Error(gl.getProgramInfoLog(program) ?? "Program link failed.");
-  }
-  return program;
-}
-
-function makeTexture(gl: WebGL2RenderingContext, width: number, height: number, data?: ImageData) {
-  const texture = gl.createTexture();
-  if (!texture) throw new Error("Unable to create texture.");
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  if (data) {
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, data);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-  } else {
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.RGBA8,
-      width,
-      height,
-      0,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      null,
-    );
-  }
-  return texture;
-}
-
-function makeTarget(gl: WebGL2RenderingContext, width: number, height: number) {
-  const texture = makeTexture(gl, width, height);
-  const framebuffer = gl.createFramebuffer();
-  if (!framebuffer) throw new Error("Unable to create framebuffer.");
-  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
-  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
-    throw new Error("Framebuffer is incomplete.");
-  }
-  return { texture, framebuffer };
-}
 
 function createSampleHeightmap(): SourceImage {
   const canvas = document.createElement("canvas");
@@ -207,10 +52,11 @@ function createSampleHeightmap(): SourceImage {
 
 function downloadBlob(blob: Blob, filename: string) {
   const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
+  const objectUrl = URL.createObjectURL(blob);
+  link.href = objectUrl;
   link.download = filename;
   link.click();
-  URL.revokeObjectURL(link.href);
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
 }
 
 function canvasToBlob(canvas: HTMLCanvasElement, mime: string, quality?: number) {
@@ -316,9 +162,10 @@ export function NormalMapApp() {
   const sourceCanvasRef = useRef<HTMLCanvasElement>(null);
   const normalCanvasRef = useRef<HTMLCanvasElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
-  const glCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const pipelineRef = useRef<NormalMapPipeline | null>(null);
   const cleanupPreviewRef = useRef<(() => void) | null>(null);
   const rafRef = useRef<number | null>(null);
+  const conventionRef = useRef<YConvention>("opengl");
 
   const [source, setSource] = useState<SourceImage | null>(null);
   const [strength, setStrength] = useState(1);
@@ -329,8 +176,17 @@ export function NormalMapApp() {
   const [exportFormat, setExportFormat] = useState<ExportFormat>("png");
   const [error, setError] = useState("");
   const [tilt, setTilt] = useState(0);
+  const [renderTime, setRenderTime] = useState(0);
+  const [precision, setPrecision] = useState("GPU");
   const [normalVersion, setNormalVersion] = useState(0);
+  const [isExporting, setIsExporting] = useState(false);
   const hasNormalMap = normalVersion > 0;
+  const previewSource = useMemo(() => source ? createPreviewSource(source) : null, [source]);
+  const previewScale = source && previewSource ? previewSource.width / source.width : 1;
+
+  useEffect(() => {
+    conventionRef.current = convention;
+  }, [convention]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -339,107 +195,42 @@ export function NormalMapApp() {
     return () => cancelAnimationFrame(frame);
   }, []);
 
+  useEffect(() => {
+    return () => pipelineRef.current?.dispose();
+  }, []);
+
   const renderNormalMap = useCallback(() => {
-    if (!source || !normalCanvasRef.current || !sourceCanvasRef.current) return;
-    const maxTextureSizeCanvas = glCanvasRef.current ?? document.createElement("canvas");
-    glCanvasRef.current = maxTextureSizeCanvas;
-    const gl = maxTextureSizeCanvas.getContext("webgl2", {
-      alpha: false,
-      antialias: false,
-      preserveDrawingBuffer: true,
-    });
-    if (!gl) {
-      setError("WebGL2 is unavailable in this browser.");
-      return;
+    if (!source || !previewSource || !normalCanvasRef.current || !sourceCanvasRef.current) return;
+    const startedAt = performance.now();
+    try {
+      const sourceCanvas = sourceCanvasRef.current;
+      sourceCanvas.width = previewSource.width;
+      sourceCanvas.height = previewSource.height;
+      sourceCanvas.getContext("2d")?.putImageData(previewSource.imageData, 0, 0);
+
+      const pipeline = pipelineRef.current ?? new NormalMapPipeline();
+      pipelineRef.current = pipeline;
+      pipeline.setSource(previewSource.imageData);
+      pipeline.render({
+        strength: strength * previewScale,
+        radius: radius === 0 ? 0 : Math.max(1, Math.round(radius * previewScale)),
+        flipY: convention === "directx",
+        gradientMode: gradient === "sobel" ? 0 : 1,
+        invert,
+      });
+      pipeline.copyTo(normalCanvasRef.current);
+      setTilt(estimateMaxTilt(normalCanvasRef.current));
+      setPrecision(pipeline.precisionLabel);
+      setRenderTime(performance.now() - startedAt);
+      setError("");
+      setNormalVersion((version) => version + 1);
+      window.dispatchEvent(new CustomEvent("normal-map-updated", {
+        detail: { flipY: convention === "directx" },
+      }));
+    } catch (renderError) {
+      setError(renderError instanceof Error ? renderError.message : "Normal map generation failed.");
     }
-    const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
-    if (source.width > maxTextureSize || source.height > maxTextureSize) {
-      setError(`Image is ${source.width}x${source.height}, above this GPU limit of ${maxTextureSize}px.`);
-      return;
-    }
-
-    setError("");
-    maxTextureSizeCanvas.width = source.width;
-    maxTextureSizeCanvas.height = source.height;
-    gl.viewport(0, 0, source.width, source.height);
-
-    const sourceCanvas = sourceCanvasRef.current;
-    sourceCanvas.width = source.width;
-    sourceCanvas.height = source.height;
-    const sourceCtx = sourceCanvas.getContext("2d");
-    sourceCtx?.putImageData(source.imageData, 0, 0);
-
-    const normalCanvas = normalCanvasRef.current;
-    normalCanvas.width = source.width;
-    normalCanvas.height = source.height;
-
-    const lumaProgram = createProgram(gl, lumaShader);
-    const blurProgram = createProgram(gl, blurShader);
-    const normalProgram = createProgram(gl, normalShader);
-    const inputTexture = makeTexture(gl, source.width, source.height, source.imageData);
-    const targetA = makeTarget(gl, source.width, source.height);
-    const targetB = makeTarget(gl, source.width, source.height);
-
-    gl.activeTexture(gl.TEXTURE0);
-
-    gl.useProgram(lumaProgram);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, targetA.framebuffer);
-    gl.bindTexture(gl.TEXTURE_2D, inputTexture);
-    gl.uniform1i(gl.getUniformLocation(lumaProgram, "uImage"), 0);
-    gl.uniform1i(gl.getUniformLocation(lumaProgram, "uInvert"), invert ? 1 : 0);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-
-    gl.useProgram(blurProgram);
-    gl.uniform1i(gl.getUniformLocation(blurProgram, "uImage"), 0);
-    gl.uniform2f(gl.getUniformLocation(blurProgram, "uTexel"), 1 / source.width, 1 / source.height);
-    gl.uniform1i(gl.getUniformLocation(blurProgram, "uRadius"), radius);
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, targetB.framebuffer);
-    gl.bindTexture(gl.TEXTURE_2D, targetA.texture);
-    gl.uniform2f(gl.getUniformLocation(blurProgram, "uDirection"), 1, 0);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, targetA.framebuffer);
-    gl.bindTexture(gl.TEXTURE_2D, targetB.texture);
-    gl.uniform2f(gl.getUniformLocation(blurProgram, "uDirection"), 0, 1);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-
-    gl.useProgram(normalProgram);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.bindTexture(gl.TEXTURE_2D, targetA.texture);
-    gl.uniform1i(gl.getUniformLocation(normalProgram, "uImage"), 0);
-    gl.uniform2f(gl.getUniformLocation(normalProgram, "uTexel"), 1 / source.width, 1 / source.height);
-    gl.uniform1f(gl.getUniformLocation(normalProgram, "uStrength"), strength);
-    gl.uniform1i(gl.getUniformLocation(normalProgram, "uFlipY"), convention === "directx" ? 1 : 0);
-    gl.uniform1i(gl.getUniformLocation(normalProgram, "uGradientMode"), gradient === "sobel" ? 0 : 1);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-    gl.finish();
-
-    const normalCtx = normalCanvas.getContext("2d", { willReadFrequently: true });
-    if (normalCtx) {
-      normalCtx.clearRect(0, 0, source.width, source.height);
-      normalCtx.drawImage(maxTextureSizeCanvas, 0, 0);
-      const sample = normalCtx.getImageData(0, 0, source.width, source.height).data;
-      let maxTilt = 0;
-      for (let i = 0; i < sample.length; i += 4) {
-        const nz = sample[i + 2] / 255 * 2 - 1;
-        maxTilt = Math.max(maxTilt, Math.acos(Math.max(-1, Math.min(1, nz))));
-      }
-      setTilt(maxTilt * 180 / Math.PI);
-    }
-
-    gl.deleteTexture(inputTexture);
-    gl.deleteTexture(targetA.texture);
-    gl.deleteTexture(targetB.texture);
-    gl.deleteFramebuffer(targetA.framebuffer);
-    gl.deleteFramebuffer(targetB.framebuffer);
-    gl.deleteProgram(lumaProgram);
-    gl.deleteProgram(blurProgram);
-    gl.deleteProgram(normalProgram);
-
-    setNormalVersion((version) => version + 1);
-    window.dispatchEvent(new CustomEvent("normal-map-updated"));
-  }, [convention, gradient, invert, radius, source, strength]);
+  }, [convention, gradient, invert, previewScale, previewSource, radius, source, strength]);
 
   useEffect(() => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -473,7 +264,7 @@ export function NormalMapApp() {
       const camera = new THREE.PerspectiveCamera(36, 1, 0.1, 100);
       camera.position.set(0, 0, 3.2);
       const controls = new OrbitControls(camera, renderer.domElement);
-      controls.enableDamping = true;
+      controls.enableDamping = false;
       controls.minDistance = 1.5;
       controls.maxDistance = 8;
       controls.minPolarAngle = Math.PI / 2 - THREE.MathUtils.degToRad(70);
@@ -490,13 +281,13 @@ export function NormalMapApp() {
       const group = new THREE.Group();
       scene.add(group);
 
-      const geometry = new THREE.PlaneGeometry(planeWidth, planeHeight, 160, 100);
+      const geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
       const material = new THREE.MeshStandardMaterial({
         color: 0x1f2227,
         roughness: 0.5,
         metalness: 0.02,
         normalMap: normalTexture,
-        normalScale: new THREE.Vector2(1, convention === "directx" ? -1 : 1),
+        normalScale: new THREE.Vector2(1, conventionRef.current === "directx" ? -1 : 1),
       });
       const mesh = new THREE.Mesh(geometry, material);
       mesh.position.z = 0.01;
@@ -513,6 +304,7 @@ export function NormalMapApp() {
       rimLight.position.set(-1.4, 2.0, 1.5);
       scene.add(rimLight);
 
+      const renderScene = () => renderer.render(scene, camera);
       const resize = () => {
         const rect = host.getBoundingClientRect();
         renderer.setSize(Math.max(1, rect.width), Math.max(1, rect.height), true);
@@ -523,35 +315,40 @@ export function NormalMapApp() {
         camera.position.z = Math.max(fitHeightDistance, fitWidthDistance) * 1.25;
         camera.updateProjectionMatrix();
         controls.update();
+        renderScene();
       };
       const moveLight = (event: PointerEvent) => {
+        if (event.buttons !== 0) return;
         const rect = renderer.domElement.getBoundingClientRect();
         const x = (event.clientX - rect.left) / Math.max(rect.width, 1) * 2 - 1;
         const y = -((event.clientY - rect.top) / Math.max(rect.height, 1) * 2 - 1);
         light.position.set(x * 3, y * 3, 2.4);
+        renderScene();
       };
-      const updateTexture = () => {
+      const updateTexture = (event: Event) => {
+        const detail = (event as CustomEvent<{ flipY?: boolean }>).detail;
         normalTexture.needsUpdate = true;
-        material.needsUpdate = true;
-        material.normalScale.y = convention === "directx" ? -1 : 1;
+        material.normalScale.y = detail?.flipY ? -1 : 1;
+        renderScene();
       };
-      window.addEventListener("resize", resize);
+      const resetPreview = () => {
+        controls.reset();
+        light.position.set(1.6, 1.3, 2.6);
+        renderScene();
+      };
+      controls.addEventListener("change", renderScene);
       window.addEventListener("normal-map-updated", updateTexture);
+      window.addEventListener("normal-preview-reset", resetPreview);
       renderer.domElement.addEventListener("pointermove", moveLight);
+      const resizeObserver = new ResizeObserver(resize);
+      resizeObserver.observe(host);
       resize();
-      let frame = 0;
-      const animate = () => {
-        frame = requestAnimationFrame(animate);
-        normalTexture.needsUpdate = true;
-        material.normalMap = normalTexture;
-        controls.update();
-        renderer.render(scene, camera);
-      };
-      animate();
+      controls.saveState();
       cleanupPreviewRef.current = () => {
-        cancelAnimationFrame(frame);
-        window.removeEventListener("resize", resize);
+        resizeObserver.disconnect();
+        controls.removeEventListener("change", renderScene);
         window.removeEventListener("normal-map-updated", updateTexture);
+        window.removeEventListener("normal-preview-reset", resetPreview);
         renderer.domElement.removeEventListener("pointermove", moveLight);
         controls.dispose();
         geometry.dispose();
@@ -564,7 +361,7 @@ export function NormalMapApp() {
     return () => {
       disposed = true;
     };
-  }, [convention, hasNormalMap, source]);
+  }, [hasNormalMap, source]);
 
   useEffect(() => {
     return () => cleanupPreviewRef.current?.();
@@ -590,14 +387,37 @@ export function NormalMapApp() {
     event.target.value = "";
   };
 
+  const resetControls = () => {
+    setStrength(1);
+    setRadius(3);
+    setConvention("opengl");
+    setInvert(false);
+    setGradient("sobel");
+    window.dispatchEvent(new CustomEvent("normal-preview-reset"));
+  };
+
   const download = async () => {
-    if (!normalCanvasRef.current || !source) return;
-    const canvas = normalCanvasRef.current;
+    if (!source || isExporting) return;
     const type = exportTypes[exportFormat];
     const filename = `${source.name}-normal.${type.extension}`;
-    const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) return;
+    let exportPipeline: NormalMapPipeline | null = null;
+    setIsExporting(true);
+    setError("");
     try {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      exportPipeline = new NormalMapPipeline();
+      exportPipeline.setSource(source.imageData);
+      exportPipeline.render({
+        strength,
+        radius,
+        flipY: convention === "directx",
+        gradientMode: gradient === "sobel" ? 0 : 1,
+        invert,
+      });
+      const canvas = document.createElement("canvas");
+      exportPipeline.copyTo(canvas);
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) throw new Error("Canvas 2D is unavailable.");
       if (exportFormat === "tga") {
         downloadBlob(encodeTga(context.getImageData(0, 0, canvas.width, canvas.height)), filename);
       } else if (exportFormat === "tiff") {
@@ -607,6 +427,9 @@ export function NormalMapApp() {
       }
     } catch (downloadError) {
       setError(downloadError instanceof Error ? downloadError.message : "Export failed.");
+    } finally {
+      exportPipeline?.dispose();
+      setIsExporting(false);
     }
   };
 
@@ -635,8 +458,8 @@ export function NormalMapApp() {
               Open image
               <input className="sr-input" type="file" accept="image/*" onChange={handleChange} />
             </label>
-            <button className="button" type="button" onClick={download} disabled={!source}>
-              Download {exportTypes[exportFormat].label}
+            <button className="button" type="button" onClick={download} disabled={!source || isExporting}>
+              {isExporting ? `Preparing ${exportTypes[exportFormat].label}…` : `Download ${exportTypes[exportFormat].label}`}
             </button>
           </div>
         </section>
@@ -718,7 +541,11 @@ export function NormalMapApp() {
                     <option key={value} value={value}>{type.label}</option>
                   ))}
                 </select>
-                <p className="hint">PNG, TGA, and TIFF preserve alpha. JPEG and WebP are preview-friendly.</p>
+                <p className="hint">Every download is regenerated at the source dimensions. PNG, TGA, and TIFF preserve alpha.</p>
+              </div>
+
+              <div className="control-actions">
+                <button className="button secondary" type="button" onClick={resetControls}>Reset controls + view</button>
               </div>
 
               <div className="stats" aria-label="Generated map statistics">
@@ -727,7 +554,15 @@ export function NormalMapApp() {
                   <strong>{source ? `${source.width} × ${source.height}` : "No image"}</strong>
                 </div>
                 <div className="stat">
-                  <span>Max tilt</span>
+                  <span>Interactive</span>
+                  <strong>{previewSource ? `${previewSource.width} × ${previewSource.height} / ${precision}` : "—"}</strong>
+                </div>
+                <div className="stat">
+                  <span>Preview pass</span>
+                  <strong>{hasNormalMap ? `${renderTime.toFixed(1)} ms` : "—"}</strong>
+                </div>
+                <div className="stat">
+                  <span>Approx. max tilt</span>
                   <strong>{tilt.toFixed(1)}°</strong>
                 </div>
               </div>
@@ -751,14 +586,14 @@ export function NormalMapApp() {
               <section className="pane" aria-labelledby="normal-pane-heading">
                 <div className="pane-header">
                   <h3 id="normal-pane-heading">Normal map</h3>
-                  <span>RGBA / data</span>
+                  <span>{previewSource ? `${previewSource.width} × ${previewSource.height} / data` : "RGBA / data"}</span>
                 </div>
                 <div className="canvas-wrap"><canvas ref={normalCanvasRef} className="fit-canvas" /></div>
               </section>
-              <section className="pane" aria-labelledby="preview-pane-heading">
+              <section className="pane preview-pane" aria-labelledby="preview-pane-heading">
                 <div className="pane-header">
                   <h3 id="preview-pane-heading">Lit preview</h3>
-                  <span>Drag light / orbit camera</span>
+                  <span>Move light / drag to orbit</span>
                 </div>
                 <div className="preview-host" ref={previewRef} />
               </section>
