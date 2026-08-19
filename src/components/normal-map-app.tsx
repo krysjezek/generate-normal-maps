@@ -613,122 +613,159 @@ export function NormalMapApp() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="brand">
-          <h1>Normal Map Generator</h1>
-          <p>Client-side heightmap to tangent-space normal map conversion.</p>
-        </div>
-        <div className="actions">
-          <label className="button secondary">
-            Open image
-            <input className="sr-input" type="file" accept="image/*" onChange={handleChange} />
-          </label>
-          <button className="button" type="button" onClick={download} disabled={!source}>
-            Download {exportTypes[exportFormat].label}
-          </button>
+        <div className="topbar-inner">
+          <div className="brand">
+            <h1>Normal Map Generator</h1>
+          </div>
+          <nav className="module-nav" aria-label="Application modules">
+            <span className="module-link active" aria-current="page">Workspace / 01</span>
+            <span className="module-link">Local processing / 01</span>
+          </nav>
         </div>
       </header>
 
-      <section className="workspace">
-        <aside className="controls">
-          <label
-            className="dropzone"
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={handleDrop}
-          >
-            <span>
-              <strong>Drop a heightmap</strong>
-              PNG and other browser-decodable images are converted locally.
-            </span>
-            <input className="sr-input" type="file" accept="image/*" onChange={handleChange} />
-          </label>
-
-          <div className="control-group">
-            <div className="field">
-              <div className="field-row">
-                <label htmlFor="strength">Strength</label>
-                <span>{strength.toFixed(2)}</span>
-              </div>
-              <input id="strength" type="range" min="0" max="5" step="0.05" value={strength} onChange={(event) => setStrength(Number(event.target.value))} />
-            </div>
-
-            <div className="field">
-              <div className="field-row">
-                <label htmlFor="radius">Smooth radius</label>
-                <span>{radius}px</span>
-              </div>
-              <input id="radius" type="range" min="0" max="24" step="1" value={radius} onChange={(event) => setRadius(Number(event.target.value))} />
-              <p className="hint">Gaussian pre-blur uses sigma = radius / 3 with clamp-to-edge sampling.</p>
-            </div>
-
-            <div className="field">
-              <div className="field-row">
-                <label>Y convention</label>
-              </div>
-              <div className="segmented">
-                <button className={convention === "opengl" ? "active" : ""} type="button" onClick={() => setConvention("opengl")}>OpenGL +Y (Blender)</button>
-                <button className={convention === "directx" ? "active" : ""} type="button" onClick={() => setConvention("directx")}>DirectX -Y</button>
-              </div>
-            </div>
-
-            <div className="field">
-              <div className="field-row">
-                <label>Height</label>
-              </div>
-              <div className="segmented">
-                <button className={!invert ? "active" : ""} type="button" onClick={() => setInvert(false)}>White raised</button>
-                <button className={invert ? "active" : ""} type="button" onClick={() => setInvert(true)}>Black raised</button>
-              </div>
-            </div>
-
-            <div className="field">
-              <div className="field-row">
-                <label>Gradient</label>
-              </div>
-              <div className="segmented">
-                <button className={gradient === "sobel" ? "active" : ""} type="button" onClick={() => setGradient("sobel")}>Sobel</button>
-                <button className={gradient === "central" ? "active" : ""} type="button" onClick={() => setGradient("central")}>Central diff</button>
-              </div>
-            </div>
-
-            <div className="field">
-              <div className="field-row">
-                <label htmlFor="export-format">Export</label>
-              </div>
-              <select id="export-format" className="select" value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ExportFormat)}>
-                {Object.entries(exportTypes).map(([value, type]) => (
-                  <option key={value} value={value}>{type.label}</option>
-                ))}
-              </select>
-              <p className="hint">PNG, TGA, and TIFF preserve alpha; JPEG and WebP are RGB-friendly preview formats.</p>
-            </div>
-
-            <div className="stat">
-              <span>Source</span>
-              <strong>{source ? `${source.width} x ${source.height}` : "No image"}</strong>
-            </div>
-            <div className="stat">
-              <span>Max tilt</span>
-              <strong>{tilt.toFixed(1)} deg</strong>
-            </div>
-            {error ? <p className="hint">{error}</p> : null}
+      <div className="page-frame">
+        <section className="page-header" aria-label="Normal map workspace introduction">
+          <div className="page-introduction">
+            <p className="context-marker">[ TEXTURE — NORMAL OPS ]</p>
+            <p>Convert height data into tangent-space normals, inspect the result under light, and export at source resolution.</p>
           </div>
-        </aside>
+          <div className="actions">
+            <label className="button secondary">
+              Open image
+              <input className="sr-input" type="file" accept="image/*" onChange={handleChange} />
+            </label>
+            <button className="button" type="button" onClick={download} disabled={!source}>
+              Download {exportTypes[exportFormat].label}
+            </button>
+          </div>
+        </section>
 
-        <div className="panes">
-          <section className="pane">
-            <div className="pane-header"><strong>Source height</strong><span>{source?.name}</span></div>
-            <div className="canvas-wrap"><canvas ref={sourceCanvasRef} className="fit-canvas" /></div>
+        <section className="workspace" aria-label="Normal map conversion workspace">
+          <aside className="controls" aria-labelledby="controls-heading">
+            <div className="section-heading">
+              <h2 id="controls-heading">[ Conversion controls ]</h2>
+              <p>All image processing stays on this device.</p>
+            </div>
+
+            <label
+              className="dropzone"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={handleDrop}
+            >
+              <span>
+                <strong>Drop a heightmap</strong>
+                PNG and other browser-decodable images are converted locally.
+              </span>
+              <input className="sr-input" type="file" accept="image/*" onChange={handleChange} />
+            </label>
+
+            <div className="control-group">
+              <div className="field">
+                <div className="field-row">
+                  <label htmlFor="strength">Strength</label>
+                  <span className="technical-value">{strength.toFixed(2)}</span>
+                </div>
+                <input id="strength" type="range" min="0" max="5" step="0.05" value={strength} onChange={(event) => setStrength(Number(event.target.value))} />
+              </div>
+
+              <div className="field">
+                <div className="field-row">
+                  <label htmlFor="radius">Smooth radius</label>
+                  <span className="technical-value">{radius}px</span>
+                </div>
+                <input id="radius" type="range" min="0" max="24" step="1" value={radius} onChange={(event) => setRadius(Number(event.target.value))} />
+                <p className="hint">Gaussian pre-blur: sigma = radius / 3. Edge sampling is clamped.</p>
+              </div>
+
+              <div className="field">
+                <div className="field-row">
+                  <span>Y convention</span>
+                </div>
+                <div className="segmented" role="group" aria-label="Y convention">
+                  <button aria-pressed={convention === "opengl"} className={convention === "opengl" ? "active" : ""} type="button" onClick={() => setConvention("opengl")}>OpenGL +Y</button>
+                  <button aria-pressed={convention === "directx"} className={convention === "directx" ? "active" : ""} type="button" onClick={() => setConvention("directx")}>DirectX -Y</button>
+                </div>
+                <p className="hint">Use OpenGL +Y for Blender.</p>
+              </div>
+
+              <div className="field">
+                <div className="field-row">
+                  <span>Height direction</span>
+                </div>
+                <div className="segmented" role="group" aria-label="Height direction">
+                  <button aria-pressed={!invert} className={!invert ? "active" : ""} type="button" onClick={() => setInvert(false)}>White raised</button>
+                  <button aria-pressed={invert} className={invert ? "active" : ""} type="button" onClick={() => setInvert(true)}>Black raised</button>
+                </div>
+              </div>
+
+              <div className="field">
+                <div className="field-row">
+                  <span>Gradient</span>
+                </div>
+                <div className="segmented" role="group" aria-label="Gradient calculation">
+                  <button aria-pressed={gradient === "sobel"} className={gradient === "sobel" ? "active" : ""} type="button" onClick={() => setGradient("sobel")}>Sobel</button>
+                  <button aria-pressed={gradient === "central"} className={gradient === "central" ? "active" : ""} type="button" onClick={() => setGradient("central")}>Central diff</button>
+                </div>
+              </div>
+
+              <div className="field">
+                <div className="field-row">
+                  <label htmlFor="export-format">Export format</label>
+                </div>
+                <select id="export-format" className="select" value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ExportFormat)}>
+                  {Object.entries(exportTypes).map(([value, type]) => (
+                    <option key={value} value={value}>{type.label}</option>
+                  ))}
+                </select>
+                <p className="hint">PNG, TGA, and TIFF preserve alpha. JPEG and WebP are preview-friendly.</p>
+              </div>
+
+              <div className="stats" aria-label="Generated map statistics">
+                <div className="stat">
+                  <span>Source</span>
+                  <strong>{source ? `${source.width} × ${source.height}` : "No image"}</strong>
+                </div>
+                <div className="stat">
+                  <span>Max tilt</span>
+                  <strong>{tilt.toFixed(1)}°</strong>
+                </div>
+              </div>
+              {error ? <p className="error-notice" role="alert">Error: {error}</p> : null}
+            </div>
+          </aside>
+
+          <section className="output-section" aria-labelledby="output-heading">
+            <div className="section-heading output-heading">
+              <h2 id="output-heading">[ Surface inspection ]</h2>
+              <p>Compare source, generated data, and the material response under movable light.</p>
+            </div>
+            <div className="panes">
+              <section className="pane" aria-labelledby="source-pane-heading">
+                <div className="pane-header">
+                  <h3 id="source-pane-heading">Source height</h3>
+                  <span>{source?.name ?? "Loading source"}</span>
+                </div>
+                <div className="canvas-wrap"><canvas ref={sourceCanvasRef} className="fit-canvas" /></div>
+              </section>
+              <section className="pane" aria-labelledby="normal-pane-heading">
+                <div className="pane-header">
+                  <h3 id="normal-pane-heading">Normal map</h3>
+                  <span>RGBA / data</span>
+                </div>
+                <div className="canvas-wrap"><canvas ref={normalCanvasRef} className="fit-canvas" /></div>
+              </section>
+              <section className="pane" aria-labelledby="preview-pane-heading">
+                <div className="pane-header">
+                  <h3 id="preview-pane-heading">Lit preview</h3>
+                  <span>Drag light / orbit camera</span>
+                </div>
+                <div className="preview-host" ref={previewRef} />
+              </section>
+            </div>
           </section>
-          <section className="pane">
-            <div className="pane-header"><strong>Normal map</strong><span>RGBA PNG</span></div>
-            <div className="canvas-wrap"><canvas ref={normalCanvasRef} className="fit-canvas" /></div>
-          </section>
-          <section className="pane">
-            <div className="pane-header"><strong>Lit preview</strong><span>Drag light, orbit camera</span></div>
-            <div className="preview-host" ref={previewRef} />
-          </section>
-        </div>
-      </section>
+        </section>
+      </div>
     </main>
   );
 }
